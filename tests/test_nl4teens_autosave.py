@@ -26,6 +26,10 @@ def load_output_functions():
         "INLINE_BUDGET": 4096,
         "_s3_cfg": lambda job: None,
         "S3_PREFIX": "test",
+        # Output adapter test uses dummy bytes; ffprobe is tested separately
+        # in tests/test_nl4teens_pipeline.py against simulated probe results.
+        "inspect_video": lambda path, **kwargs: {"status": "ok"},
+        "optional_delivery_cfg": lambda job: None,
     }
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)
     return namespace
