@@ -63,7 +63,8 @@ export async function handleDownload(request, bucket, clock = () => Date.now()) 
   headers.set("Accept-Ranges", "bytes");
   headers.set("ETag", object.httpEtag);
   let status = 200;
-  if (object.range && Number.isInteger(object.range.offset) &&
+  if (request.headers.has("range") && object.range &&
+      Number.isInteger(object.range.offset) &&
       Number.isInteger(object.range.length)) {
     const { offset, length } = object.range;
     headers.set("Content-Range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
