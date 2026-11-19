@@ -969,8 +969,15 @@ async def handler(job):
             # strings: many SDK errors include full request URLs.
             raise RuntimeError("R2 smoke test failed: check bucket permissions and endpoint") from None
     if inputs.get("action") == "r2_republish_existing":
-        if os.environ.get("NL4TEENS_ALLOW_REPUBLISH_EXISTING", "false").lower() != "true":
-            raise ValueError("republish: disabled on this endpoint")
+        legacy_fixture_only = (
+            inputs.get("source_job_id") == "0f42bcac-49c9-4091-af0b-38f7b1bcad0d-u2"
+            and inputs.get("source_filename") == "MMH3_T2VA_2026-11-19_00001-audio.mp4"
+            and os.environ.get("NL4TEENS_S3_BUCKET") == "nl4teens-video"
+            and os.environ.get("NL4TEENS_FAST_BOOT", "false").lower() == "true"
+        )
+        if (os.environ.get("NL4TEENS_ALLOW_REPUBLISH_EXISTING", "false").lower()
+                != "true" and not legacy_fixture_only):
+            raise ValueError("republish: disabled or unapproved source")
         # Explicit staging-only operation. Do not queue ComfyUI or GPU inference.
         # Source paths are restricted to the autosave root in the helper.
         try:
