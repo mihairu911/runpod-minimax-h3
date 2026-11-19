@@ -444,7 +444,14 @@ def _patch(prompt, job):
         if director_tdata is None and job.get("seconds"):
             sec = int(job["seconds"])
             if "duration" in inp:
-                inp["duration"] = f"{sec}s"
+                # QwenVL's duration is a constrained dropdown (5/10/15/20s).
+                # It is a *text prompt hint*, not the MiniMax sampler's latent
+                # length. For a shorter render (e.g. 2s), keep the real 2s
+                # frame count in PrimitiveFloat but supply a valid 5s hint.
+                if ct == "QwenVL_Unified_PromptEnhancer":
+                    inp["duration"] = f"{min(20, max(5, ((sec + 4) // 5) * 5))}s"
+                else:
+                    inp["duration"] = f"{sec}s"
             elif "length" in inp and not isinstance(inp["length"], list):
                 inp["length"] = sec * 24
             elif "value" in inp and ct.startswith("Primitive"):
