@@ -29,7 +29,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_nl4teens_autosave.py' -v
 
   build:
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.event.head_commit.message != 'ci: probe GHCR public access'
     needs: verify
     runs-on: ubuntu-latest
     steps:
@@ -53,3 +53,33 @@ jobs:
             nl4teens.autosave.version=direct-handler-v1
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  public_pull_probe:
+    if: github.event_name == 'push' && github.event.head_commit.message == 'ci: probe GHCR public access'
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check anonymous GHCR manifest pull
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse
+          image = os.environ["GITHUB_REPOSITORY"].lower()
+          scope = urllib.parse.quote("repository:" + image + ":pull")
+          url = "https://ghcr.io/token?service=ghcr.io&scope=" + scope
+          try:
+              with urllib.request.urlopen(url, timeout=20) as reply:
+                  token = json.load(reply)["token"]
+              request = urllib.request.Request(
+                  "https://ghcr.io/v2/" + image + "/manifests/autosave-test",
+                  headers={
+                      "Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as reply:
+                  print("Anonymous image pull verified:", reply.status)
+                  print("Digest:", reply.headers.get("Docker-Content-Digest", "not supplied"))
+          except urllib.error.HTTPError as error:
+              print("GHCR anonymous pull rejected:", error.code)
+              raise SystemExit(1)
+          PY
