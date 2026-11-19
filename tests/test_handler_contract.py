@@ -25,7 +25,7 @@ def harness(missing=False):
                 "inputs": {"save_output": True}},
     }
     async def ensure(): calls.append("ensure_comfy")
-    async def queue(prompt):
+    async def queue(prompt, job_id=None):
         calls.append("render_started")
         return {"outputs": {}}
     def object_info(cls):
@@ -34,6 +34,8 @@ def harness(missing=False):
         }}}}
     env = {
         "asyncio": asyncio, "Path": pathlib.Path, "time": time, "os": os,
+        "log_event": lambda *a, **kw: None,
+        "COMFY_LOG_PATH": pathlib.Path("/workspace/comfy.log"),
         "_ensure_comfy": ensure, "_prune_volume_outputs": lambda: None,
         "_load_workflow": lambda path: graph,
         "_patch": lambda prompt, job: prompt,
