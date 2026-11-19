@@ -150,9 +150,17 @@ def _sync_workflows():
 
 
 def _wait_prep():
+    # Explicit zero preserves the upstream direct-handler debug mode.
+    if PREP_TIMEOUT_S == 0:
+        return
     deadline = time.time() + PREP_TIMEOUT_S
     while not os.path.exists(PREP_DONE) and time.time() < deadline:
         time.sleep(2)
+    if not os.path.exists(PREP_DONE):
+        raise TimeoutError(f"ComfyUI workspace preparation exceeded {PREP_TIMEOUT_S}s")
+    prep_error = Path(PREP_DONE + ".error")
+    if prep_error.is_file():
+        raise RuntimeError(f"ComfyUI workspace preparation failed: {prep_error.read_text()[:300]}")
 
 
 def _boot_in_bg():
@@ -891,6 +899,10 @@ async def handler(job):
             "workflows": sorted({p.name for d in (WF_SYNC_DIR, WORKFLOWS_DIR) for p in d.glob("*.json")}),
             "volume_mounted": os.path.isdir("/runpod-volume"),
             "autosave": "direct-handler-v1",
+            "fast_boot": os.environ.get("NL4TEENS_FAST_BOOT", "false").lower() == "true",
+            "prep_done": os.path.isfile(PREP_DONE),
+            "prep_error": (Path(PREP_DONE + ".error").read_text()[:300]
+                           if Path(PREP_DONE + ".error").is_file() else None),
         }
     if inputs.get("action") == "storage_smoke_test":
         result = _nl_autosave_file("nl4teens_smoke.mp4", b"NL4TEENS_STORAGE_SMOKE_V1", job)
