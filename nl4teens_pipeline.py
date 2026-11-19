@@ -181,3 +181,53 @@ def signed_media_upload(data, filename, job, cfg, make_client, ttl=3600):
         ExpiresIn=max(60, min(int(ttl), 604800)),
     )
     return {"delivery": "signed_url", "url": url, "url_ttl_seconds": max(60, min(int(ttl), 604800))}
+
+
+def r2_delivery_smoke_test(cfg, make_client, job_id, urlopen=None):
+    """Write, signed-GET, compare and delete a tiny object.
+
+    This test runs independently from ComfyUI; it must never return the signed
+    URL or the access credentials to the RunPod job response.
+    """
+    import urllib.request
+    if urlopen is None:
+        urlopen = urllib.request.urlopen
+    if not isinstance(cfg, dict) or not all(cfg.get(k) for k in (
+            "endpointUrl", "accessId", "accessSecret", "bucketName")):
+        return {"status": "not_configured", "r2_ready": False}
+    host = (urllib.parse.urlparse(cfg["endpointUrl"]).hostname or "").lower()
+    if not (host.endswith(".r2.cloudflarestorage.com") and
+            cfg["endpointUrl"].startswith("https://")):
+        raise ValueError("R2 smoke test requires a Cloudflare R2 S3 HTTPS endpoint")
+
+    marker = b"NL4TEENS_R2_DELIVERY_SMOKE_V1"
+    safe_jid = "".join(c if c.isalnum() or c in "_.-" else "_" for c in str(job_id))[:80]
+    key = "nl4teens/smoke/" + safe_jid + ".txt"
+    client = make_client(cfg)
+    uploaded = False
+    cleanup_ok = False
+    try:
+        client.put_object(Bucket=cfg["bucketName"], Key=key, Body=marker,
+                          ContentType="text/plain")
+        uploaded = True
+        signed_url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": cfg["bucketName"], "Key": key},
+            ExpiresIn=120,
+        )
+        # Explicitly check the signed GET. Readback must match the uploaded bytes.
+        with urlopen(signed_url, timeout=20) as response:
+            received = response.read(1024)
+        if received != marker:
+            raise RuntimeError("R2 smoke test readback differs from the uploaded marker")
+    finally:
+        if uploaded:
+            client.delete_object(Bucket=cfg["bucketName"], Key=key)
+            cleanup_ok = True
+    return {
+        "status": "ok",
+        "r2_ready": True,
+        "write_verified": True,
+        "signed_get_verified": True,
+        "temporary_object_deleted": cleanup_ok,
+    }
