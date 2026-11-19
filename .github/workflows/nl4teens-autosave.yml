@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile Python
-        run: python -m py_compile handler.py prepare_workspace.py
+        run: python -m py_compile handler.py prepare_workspace.py nl4teens_pipeline.py
       - name: Validate entrypoint syntax
         run: bash -n serverless-entrypoint.sh
       - name: Autosave and startup regression tests
