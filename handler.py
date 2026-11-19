@@ -36,6 +36,7 @@ import runpod
 from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
                               optional_delivery_cfg, signed_media_upload,
                               r2_delivery_smoke_test, republish_existing_video)
+from nl4teens_diagnostics import worker_comfy_log_path, log_event, queue_snapshot
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
 COMFY_URL = "http://127.0.0.1:8188"
@@ -62,6 +63,7 @@ S3_PREFIX = os.environ.get("S3_OUTPUT_PREFIX", "outputs")
 # (e.g. running handler.py directly without the entrypoint).
 PREP_DONE = os.environ.get("PREP_DONE", "/tmp/comfy-prep.done")
 PREP_TIMEOUT_S = int(os.environ.get("COMFY_PREP_TIMEOUT_S", "900"))
+COMFY_LOG_PATH = Path("/workspace/comfy.log")
 
 # Config → unet filename needle + sampler values (mirrors chat_service.py _MINIMAX_CONFIGS)
 MINIMAX_CONFIGS = {
@@ -91,6 +93,7 @@ _BOOT_ERR = None
 
 
 def _boot_comfy():
+    global COMFY_LOG_PATH
     # Extra flags come from COMFYUI_EXTRA_ARGS (space-separated). Keep the
     # default empty: --fast/--use-sage-attention/--async-offload corrupt the
     # int8-convrot Qwen/MMh3 stacks (flat garbage output).
@@ -104,7 +107,11 @@ def _boot_comfy():
         # weights into flat garbage.
         "--enable-triton-backend",
     ] + os.environ.get("COMFYUI_EXTRA_ARGS", "").split()
-    comfy_log = open("/workspace/comfy.log", "ab", buffering=0)
+    # Persist the *complete* ComfyUI stdout/stderr on Global Volume. On timeout,
+    # the worker/container disappears but the tail of this file remains.
+    COMFY_LOG_PATH = worker_comfy_log_path()
+    comfy_log = open(COMFY_LOG_PATH, "ab", buffering=0)
+    print(f"[nl4teens] ComfyUI persistent logfile: {COMFY_LOG_PATH}", flush=True)
     proc = subprocess.Popen(cmd, cwd=COMFY_DIR, stdout=comfy_log, stderr=subprocess.STDOUT)
     deadline = time.time() + 600
     while time.time() < deadline:
@@ -186,7 +193,7 @@ def _boot_in_bg():
 async def _ensure_comfy():
     await asyncio.to_thread(_BOOT_DONE.wait)
     if _BOOT_ERR is not None:
-        raise RuntimeError(f"ComfyUI failed to boot: {_BOOT_ERR} (see /workspace/comfy.log)")
+        raise RuntimeError(f"ComfyUI failed to boot: {_BOOT_ERR} (check persisted ComfyUI worker logs)")
 
 
 def _media_bytes(value):
@@ -735,7 +742,7 @@ def _interrupt_prompt(prompt_id):
             print(f"[handler] {path} failed during cancel: {exc}", flush=True)
 
 
-async def _queue_and_wait(prompt):
+async def _queue_and_wait(prompt, job_id=None):
     # Async + awaited sleeps: the runpod SDK stops a job by cancelling its
     # task, so the CancelledError can only be delivered at an await — a sync
     # handler would freeze the event loop and never see the stop signal.
@@ -743,22 +750,44 @@ async def _queue_and_wait(prompt):
     resp = json.loads(await asyncio.to_thread(
         _http, "/prompt", {"prompt": prompt, "client_id": client_id}, 60))
     prompt_id = resp["prompt_id"]
+    started = time.monotonic()
+    last_heartbeat = started
+    if job_id:
+        log_event(job_id, "queued", prompt_id=prompt_id, node_count=len(prompt),
+                  log_path=COMFY_LOG_PATH)
     deadline = time.time() + JOB_TIMEOUT_S
     try:
         while time.time() < deadline:
             hist = json.loads(await asyncio.to_thread(_http, f"/history/{prompt_id}", None, 30))
             entry = hist.get(prompt_id)
             if entry and entry.get("status", {}).get("status_str") == "error":
+                if job_id:
+                    log_event(job_id, "comfy_error", prompt_id=prompt_id,
+                              elapsed_seconds=time.monotonic() - started)
                 msgs = [str(m) for m in entry.get("status", {}).get("messages", [])]
                 raise RuntimeError(f"ComfyUI job failed: {' | '.join(msgs)[:800]}")
             if entry and entry.get("status", {}).get("completed"):
+                if job_id:
+                    log_event(job_id, "comfy_finished", prompt_id=prompt_id,
+                              elapsed_seconds=time.monotonic() - started)
                 return entry
+            if job_id and time.monotonic() - last_heartbeat >= 20:
+                last_heartbeat = time.monotonic()
+                snapshot = await asyncio.to_thread(queue_snapshot, lambda path: json.loads(_http(path, timeout=8)))
+                log_event(job_id, "heartbeat", prompt_id=prompt_id,
+                          elapsed_seconds=time.monotonic() - started, **snapshot)
             await asyncio.sleep(3)
     except asyncio.CancelledError:
+        if job_id:
+            log_event(job_id, "cancelled", prompt_id=prompt_id,
+                      elapsed_seconds=time.monotonic() - started)
         # Even if this await gets cancelled again, the orphan thread still
         # completes and ComfyUI gets interrupted.
         await asyncio.to_thread(_interrupt_prompt, prompt_id)
         raise
+    if job_id:
+        log_event(job_id, "comfy_timeout", prompt_id=prompt_id,
+                  elapsed_seconds=time.monotonic() - started)
     raise TimeoutError(f"prompt {prompt_id} exceeded {JOB_TIMEOUT_S}s")
 
 
@@ -925,6 +954,9 @@ def _collect_outputs(history_entry, prompt, job, inline_used):
 async def handler(job):
     print(f"[handler] job {job.get('id')} received", flush=True)
     inputs = job.get("input") or {}
+    if inputs.get("action") not in ("health", "storage_smoke_test", "r2_smoke_test"):
+        log_event(job.get("id"), "received", workflow=inputs.get("workflow", ""),
+                  seconds=inputs.get("seconds", 0))
     if inputs.get("action") == "health":
         # Hub smoke test: answers 200 without touching ComfyUI or models, so it
         # also works on an endpoint deployed without the network volume.
@@ -989,6 +1021,7 @@ async def handler(job):
                                + type(exc).__name__) from None
     # Any real workload needs ComfyUI — wait for the background boot first.
     await _ensure_comfy()
+    log_event(job.get("id"), "comfy_ready", log_path=COMFY_LOG_PATH)
     _prune_volume_outputs()
     # _patch uploads input media (blocking, up to minutes for video) — run it
     # off-thread so a cancel signal can still be delivered during uploads.
@@ -1002,6 +1035,8 @@ async def handler(job):
     prompt = _apply_node_params(prompt, inputs.get("params"))
     model_check = await asyncio.to_thread(preflight_models, prompt, _preflight_object_info)
     print(f"[handler] model preflight passed: {model_check['models_checked']} checked", flush=True)
+    log_event(job.get("id"), "preflight_ok", checked_models=model_check["models_checked"],
+              node_count=len(prompt))
     if inputs.get("action") == "preflight":
         return {"status": "ok", "preflight": model_check, "node_count": len(prompt),
                 "expects_video": any(
@@ -1009,9 +1044,9 @@ async def handler(job):
                     for n in prompt.values() if isinstance(n, dict))}
     print(f"[handler] queuing prompt ({len(prompt)} nodes)", flush=True)
     started = time.time()
-    comfy_log = Path("/workspace/comfy.log")
+    comfy_log = COMFY_LOG_PATH
     log_mark = comfy_log.stat().st_size if comfy_log.is_file() else 0
-    history = await _queue_and_wait(prompt)
+    history = await _queue_and_wait(prompt, job_id=job.get("id"))
     print(f"[handler] comfy execution took {time.time() - started:.1f}s", flush=True)
     inline_used = [0]
     outputs, texts = await asyncio.to_thread(_collect_outputs, history, prompt, job, inline_used)
@@ -1029,6 +1064,7 @@ async def handler(job):
         print(f"[handler] fallback sweep — {len(outputs)} file(s) in output/", flush=True)
     validate_video_outputs(prompt, outputs)
     print(f"[handler] done — {len(outputs)} output(s)", flush=True)
+    log_event(job.get("id"), "completed", elapsed_seconds=time.time() - started)
     return {"outputs": outputs, "texts": texts, "preflight": model_check}
 
 
