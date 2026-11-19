@@ -771,8 +771,18 @@ def _s3_cfg(job):
 def _s3_client(cfg):
     import boto3
     from botocore.config import Config
-    host = urllib.parse.urlparse(cfg["endpointUrl"]).netloc
-    region = cfg.get("region") or host.split(".", 1)[0].removeprefix("s3api-") or "us-east-1"
+    host = (urllib.parse.urlparse(cfg["endpointUrl"]).hostname or "").lower()
+    if "r2.cloudflarestorage.com" in host:
+        default_region = "auto"
+    elif host.startswith("s3.") and host.endswith(".amazonaws.com"):
+        default_region = host.split(".")[1]
+    elif host.startswith("s3-") and host.endswith(".amazonaws.com"):
+        default_region = host.split(".")[0][3:]
+    elif host.startswith("s3api-"):
+        default_region = host.split(".")[0].removeprefix("s3api-")
+    else:
+        default_region = "us-east-1"
+    region = cfg.get("region") or default_region
     return boto3.client(
         "s3",
         endpoint_url=cfg["endpointUrl"],
