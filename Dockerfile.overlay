@@ -6,3 +6,4 @@ FROM ghcr.io/mihairu911/runpod-minimax-h3@sha256:369cf8fa0cebbb3897e89c8b17aaed1
 COPY handler.py /opt/serverless/handler.py
 COPY --chmod=755 serverless-entrypoint.sh /opt/serverless/entrypoint.sh
 COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
+COPY nl4teens_pipeline.py /opt/serverless/nl4teens_pipeline.py
