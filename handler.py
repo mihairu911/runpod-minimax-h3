@@ -34,7 +34,8 @@ from pathlib import Path
 
 import runpod
 from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
-                              optional_delivery_cfg, signed_media_upload)
+                              optional_delivery_cfg, signed_media_upload,
+                              r2_delivery_smoke_test)
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
 COMFY_URL = "http://127.0.0.1:8188"
@@ -934,6 +935,7 @@ async def handler(job):
             "workflows": sorted({p.name for d in (WF_SYNC_DIR, WORKFLOWS_DIR) for p in d.glob("*.json")}),
             "volume_mounted": os.path.isdir("/runpod-volume"),
             "autosave": "direct-handler-v1",
+            "r2_configured": optional_delivery_cfg(job) is not None,
             "fast_boot": os.environ.get("NL4TEENS_FAST_BOOT", "false").lower() == "true",
             "prep_done": os.path.isfile(PREP_DONE),
             "prep_error": (Path(PREP_DONE + ".error").read_text()[:300]
@@ -953,6 +955,19 @@ async def handler(job):
                 pass
         return {"status": "ok", "autosave": "direct-handler-v1",
                 "volume_write_verified": True, "output_root": str(p.parent.parent)}
+    if inputs.get("action") == "r2_smoke_test":
+        # No video inference and no ComfyUI wait. A tiny temporary object
+        # validates private bucket credentials and a signed GET end to end.
+        cfg = optional_delivery_cfg(job)
+        if cfg is None:
+            return {"status": "not_configured", "r2_ready": False}
+        try:
+            return await asyncio.to_thread(
+                r2_delivery_smoke_test, cfg, _s3_client, job.get("id") or "r2-smoke")
+        except Exception:
+            # Never return or log presigned URLs, API tokens or S3 exception
+            # strings: many SDK errors include full request URLs.
+            raise RuntimeError("R2 smoke test failed: check bucket permissions and endpoint") from None
     # Any real workload needs ComfyUI — wait for the background boot first.
     await _ensure_comfy()
     _prune_volume_outputs()
