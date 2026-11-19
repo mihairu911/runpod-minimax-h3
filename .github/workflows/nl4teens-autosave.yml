@@ -29,7 +29,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_nl4teens_autosave.py' -v
 
   build:
-    if: "github.event_name != 'pull_request' && github.event.head_commit.message != 'ci: probe GHCR public access'"
+    if: "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[build]'))"
     needs: verify
     runs-on: ubuntu-latest
     steps:
