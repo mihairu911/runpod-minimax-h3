@@ -48,7 +48,7 @@ An earlier **valid and independently checksum-verified** video remains on Global
 - Filename: `MMH3_T2VA_2026-11-19_00001-audio.mp4`
 - Size: 976195 bytes, SHA-256: `ff24d4d786b4ce1624fc806df4fd3be61a7050113a3f4ef868f83f70b3e0acb1`
 
-To verify the private S3 video delivery path **without another inference**, the handler now has a staging-gated `action=r2_republish_existing` that reads only videos from `NL4TEENS_OUTPUT_ROOT/<source_job_id>/<source_filename>`, applies ffprobe QC and uploads to R2. Enable `NL4TEENS_ALLOW_REPUBLISH_EXISTING=true` on the **test endpoint only** and submit:
+To verify the private S3 video delivery path **without another inference**, the handler now has a staging-gated `action=r2_republish_existing` that reads only videos from `NL4TEENS_OUTPUT_ROOT/<source_job_id>/<source_filename>`, applies ffprobe QC and uploads to R2. The test handler accepts **only the one verified fixture below** when the bucket is `nl4teens-video` and fast boot is on. No environment secret migration or additional flag is needed. Any other file requires explicit `NL4TEENS_ALLOW_REPUBLISH_EXISTING=true`. Submit:
 
 ```json
 {"input":{"action":"r2_republish_existing",
