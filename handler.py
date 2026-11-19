@@ -773,9 +773,39 @@ def _s3_client(cfg):
     )
 
 
+
+def _nl_autosave_file(filename, data, job):
+    """Persist video to the mounted Global Volume and return compact metadata."""
+    import hashlib
+    if not data:
+        raise ValueError("empty media output")
+    name = Path(str(filename)).name
+    if name in ("", ".", ".."):
+        raise ValueError("invalid output filename")
+    jid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(job.get("id") or "job"))[:100]
+    root = Path(os.environ.get("NL4TEENS_OUTPUT_ROOT",
+        "/runpod-volume/references/nl4teens/v1/test_outputs/auto")) / jid
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / name
+    temp = root / (name + ".partial")
+    try:
+        with temp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp, dest)
+    finally:
+        temp.unlink(missing_ok=True)
+    print(f"[nl4teens] video saved: {dest} ({len(data)} bytes)", flush=True)
+    return {"filename": name, "volume_path": str(dest), "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "saved": True}
+
+
 def _emit_file(filename, data, job, inline_used):
     """Small outputs inline as b64; large ones upload to the job's s3Config
     storage (e.g. the RunPod network volume S3 API) and return a presigned URL."""
+    if Path(str(filename)).suffix.lower() in (".mp4", ".webm", ".mov"):
+        return _nl_autosave_file(filename, data, job)
     oversized = len(data) > INLINE_MAX or inline_used[0] + len(data) > INLINE_BUDGET
     s3c = _s3_cfg(job)
     if oversized and s3c:
@@ -860,7 +890,22 @@ async def handler(job):
             "comfyui_error": str(_BOOT_ERR) if _BOOT_ERR else None,
             "workflows": sorted({p.name for d in (WF_SYNC_DIR, WORKFLOWS_DIR) for p in d.glob("*.json")}),
             "volume_mounted": os.path.isdir("/runpod-volume"),
+            "autosave": "direct-handler-v1",
         }
+    if inputs.get("action") == "storage_smoke_test":
+        result = _nl_autosave_file("nl4teens_smoke.mp4", b"NL4TEENS_STORAGE_SMOKE_V1", job)
+        p = Path(result["volume_path"])
+        try:
+            if p.read_bytes() != b"NL4TEENS_STORAGE_SMOKE_V1":
+                raise OSError("failed storage readback")
+        finally:
+            p.unlink(missing_ok=True)
+            try:
+                p.parent.rmdir()
+            except OSError:
+                pass
+        return {"status": "ok", "autosave": "direct-handler-v1",
+                "volume_write_verified": True, "output_root": str(p.parent.parent)}
     # Any real workload needs ComfyUI — wait for the background boot first.
     await _ensure_comfy()
     _prune_volume_outputs()
