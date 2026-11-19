@@ -125,5 +125,50 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(out))
 
 
+class RepublishTests(unittest.TestCase):
+    def test_existing_mp4_delivered_and_checked_without_render(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            saved = root / "prior_job" / "old.mp4"
+            saved.parent.mkdir()
+            saved.write_bytes(b"known-video-test-bytes-" * 10)
+            class Client:
+                def put_object(self, **args):
+                    self.key = args["Key"]
+                def generate_presigned_url(self, op, Params, ExpiresIn):
+                    return "https://storage.example/signed-test"
+            job = {"id": "republish_job", "input": {
+                "action": "r2_republish_existing", "source_job_id": "prior_job",
+                "source_filename": "old.mp4", "require_audio": True,
+                "s3Config": {"endpointUrl": "https://a.r2.cloudflarestorage.com",
+                             "accessId": "test", "accessSecret": "test",
+                             "bucketName": "nl4teens-video"}}}
+            with patch.object(p, "inspect_video", return_value={
+                    "status": "ok", "duration_seconds": 5.167,
+                    "audio_present": True}):
+                result = p.republish_existing_video(job, lambda cfg: Client(), root=root)
+            self.assertEqual(result["delivery"], "signed_url")
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["bytes"], saved.stat().st_size)
+            self.assertTrue(result["qc"]["audio_present"])
+            self.assertEqual(saved.read_bytes(), b"known-video-test-bytes-" * 10)
+
+    def test_rejects_path_traversal(self):
+        job = {"id": "republish_job", "input": {
+            "source_job_id": "../escape", "source_filename": "clip.mp4"}}
+        with self.assertRaisesRegex(ValueError, "invalid source_job_id"):
+            p.republish_existing_video(job, lambda cfg: None)
+
+    def test_rejects_missing_file_and_mime(self):
+        with tempfile.TemporaryDirectory() as td:
+            job = {"id": "republish", "input": {
+                "source_job_id": "missing", "source_filename": "video.mp4"}}
+            with self.assertRaises(FileNotFoundError):
+                p.republish_existing_video(job, lambda cfg: None, root=td)
+            job["input"]["source_filename"] = "secret.txt"
+            with self.assertRaisesRegex(ValueError, "must be"):
+                p.republish_existing_video(job, lambda cfg: None, root=td)
+
+
 if __name__ == "__main__":
     unittest.main()
