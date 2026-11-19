@@ -35,7 +35,7 @@ from pathlib import Path
 import runpod
 from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
                               optional_delivery_cfg, signed_media_upload,
-                              r2_delivery_smoke_test)
+                              r2_delivery_smoke_test, republish_existing_video)
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
 COMFY_URL = "http://127.0.0.1:8188"
@@ -968,6 +968,18 @@ async def handler(job):
             # Never return or log presigned URLs, API tokens or S3 exception
             # strings: many SDK errors include full request URLs.
             raise RuntimeError("R2 smoke test failed: check bucket permissions and endpoint") from None
+    if inputs.get("action") == "r2_republish_existing":
+        if os.environ.get("NL4TEENS_ALLOW_REPUBLISH_EXISTING", "false").lower() != "true":
+            raise ValueError("republish: disabled on this endpoint")
+        # Explicit staging-only operation. Do not queue ComfyUI or GPU inference.
+        # Source paths are restricted to the autosave root in the helper.
+        try:
+            return await asyncio.to_thread(republish_existing_video, job, _s3_client)
+        except Exception as exc:
+            # Signed S3 links or object-storage credentials might appear in
+            # underlying SDK exception strings; never include them in status.
+            raise RuntimeError("republish: video QC or R2 delivery failed: "
+                               + type(exc).__name__) from None
     # Any real workload needs ComfyUI — wait for the background boot first.
     await _ensure_comfy()
     _prune_volume_outputs()
