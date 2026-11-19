@@ -231,3 +231,45 @@ def r2_delivery_smoke_test(cfg, make_client, job_id, urlopen=None):
         "signed_get_verified": True,
         "temporary_object_deleted": cleanup_ok,
     }
+
+
+def republish_existing_video(job, make_client, root=None):
+    """Republish an already stored video to private R2, without inference.
+
+    Staging-only opt-in in handler. Restrict source to safe basename and job ID
+    under NL4TEENS_OUTPUT_ROOT; never accept absolute paths or arbitrary reads.
+    """
+    import hashlib
+    import re
+    inputs = job.get("input") or {}
+    source_job_id = inputs.get("source_job_id")
+    source_filename = inputs.get("source_filename")
+    if not isinstance(source_job_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", source_job_id):
+        raise ValueError("republish: invalid source_job_id")
+    if not isinstance(source_filename, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}", source_filename):
+        raise ValueError("republish: invalid source_filename")
+    if source_filename.lower().endswith(VIDEO_EXT) is False:
+        raise ValueError("republish: source must be MP4, MOV or WEBM")
+    output_root = Path(root or os.environ.get(
+        "NL4TEENS_OUTPUT_ROOT",
+        "/runpod-volume/references/nl4teens/v1/test_outputs/auto")).resolve()
+    source = (output_root / source_job_id / source_filename).resolve()
+    if not source.is_relative_to(output_root) or not source.is_file():
+        raise FileNotFoundError("republish: source is missing or outside the output root")
+    size = source.stat().st_size
+    if size < 32 or size > 256 * 1024 * 1024:
+        raise ValueError("republish: source size outside permitted range")
+    qc = inspect_video(source, require_audio=bool(inputs.get("require_audio", False)))
+    cfg = optional_delivery_cfg(job)
+    if cfg is None:
+        raise RuntimeError("republish: R2 delivery is not configured")
+    data = source.read_bytes()
+    delivered = signed_media_upload(
+        data, source_filename, job, cfg, make_client,
+        ttl=os.environ.get("NL4TEENS_S3_URL_TTL_S", "3600"))
+    return {
+        "status": "ok", "source_job_id": source_job_id,
+        "filename": source_filename, "volume_path": str(source),
+        "bytes": size, "sha256": hashlib.sha256(data).hexdigest(),
+        "qc": qc, **delivered,
+    }
