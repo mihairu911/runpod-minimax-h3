@@ -1,9 +1,11 @@
 """Handler integration contract without running RunPod, ComfyUI or GPU."""
 import ast
+import os
 import asyncio
 import pathlib
 import time
 import unittest
+from unittest.mock import patch
 
 from nl4teens_pipeline import preflight_models, validate_video_outputs
 
@@ -74,6 +76,31 @@ class HandlerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Video output missing"):
             asyncio.run(handle(payload))
         self.assertIn("render_started", calls)
+
+
+    def test_republish_rejects_other_videos(self):
+        handle, calls = harness()
+        with patch.dict(os.environ, {"NL4TEENS_S3_BUCKET": "nl4teens-video",
+                                     "NL4TEENS_FAST_BOOT": "true"}):
+            payload = {"id": "offline", "input": {"action": "r2_republish_existing",
+                        "source_job_id": "unapproved", "source_filename": "test.mp4"}}
+            with self.assertRaisesRegex(ValueError, "unapproved source"):
+                asyncio.run(handle(payload))
+        self.assertNotIn("render_started", calls)
+
+    def test_verified_fixture_runs_without_render(self):
+        handle, calls = harness()
+        handle.__globals__["_s3_client"] = lambda cfg: None
+        handle.__globals__["republish_existing_video"] = (
+            lambda job, client: {"status": "ok", "delivery": "signed_url"})
+        with patch.dict(os.environ, {"NL4TEENS_S3_BUCKET": "nl4teens-video",
+                                     "NL4TEENS_FAST_BOOT": "true"}):
+            payload = {"id": "offline", "input": {"action": "r2_republish_existing",
+                "source_job_id": "0f42bcac-49c9-4091-af0b-38f7b1bcad0d-u2",
+                "source_filename": "MMH3_T2VA_2026-11-19_00001-audio.mp4"}}
+            outcome = asyncio.run(handle(payload))
+        self.assertEqual(outcome["delivery"], "signed_url")
+        self.assertNotIn("render_started", calls)
 
 
 if __name__ == "__main__":
