@@ -48,6 +48,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile.overlay
           push: true
           tags: ghcr.io/${{ github.repository }}:autosave-test
           labels: |
