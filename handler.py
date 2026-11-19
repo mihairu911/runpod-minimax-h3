@@ -749,7 +749,7 @@ def _interrupt_prompt(prompt_id):
             print(f"[handler] {path} failed during cancel: {exc}", flush=True)
 
 
-async def _queue_and_wait(prompt, job_id=None):
+async def _queue_and_wait(prompt, job_id=None, wait_s=None):
     # Async + awaited sleeps: the runpod SDK stops a job by cancelling its
     # task, so the CancelledError can only be delivered at an await — a sync
     # handler would freeze the event loop and never see the stop signal.
@@ -762,7 +762,11 @@ async def _queue_and_wait(prompt, job_id=None):
     if job_id:
         log_event(job_id, "queued", prompt_id=prompt_id, node_count=len(prompt),
                   log_path=COMFY_LOG_PATH)
-    deadline = time.time() + JOB_TIMEOUT_S
+    # Staging diagnostics can request a longer *per-job* ComfyUI wait without
+    # replacing the endpoint's existing secret environment variables.
+    # The outer RunPod execution limit still caps total GPU time.
+    allowed_wait_s = max(60, min(int(wait_s if wait_s is not None else JOB_TIMEOUT_S), 3600))
+    deadline = time.time() + allowed_wait_s
     try:
         while time.time() < deadline:
             hist = json.loads(await asyncio.to_thread(_http, f"/history/{prompt_id}", None, 30))
@@ -795,7 +799,7 @@ async def _queue_and_wait(prompt, job_id=None):
     if job_id:
         log_event(job_id, "comfy_timeout", prompt_id=prompt_id,
                   elapsed_seconds=time.monotonic() - started)
-    raise TimeoutError(f"prompt {prompt_id} exceeded {JOB_TIMEOUT_S}s")
+    raise TimeoutError(f"prompt {prompt_id} exceeded {allowed_wait_s}s")
 
 
 def _s3_cfg(job):
@@ -1053,7 +1057,8 @@ async def handler(job):
     started = time.time()
     comfy_log = COMFY_LOG_PATH
     log_mark = comfy_log.stat().st_size if comfy_log.is_file() else 0
-    history = await _queue_and_wait(prompt, job_id=job.get("id"))
+    history = await _queue_and_wait(
+        prompt, job_id=job.get("id"), wait_s=inputs.get("comfy_timeout_s"))
     print(f"[handler] comfy execution took {time.time() - started:.1f}s", flush=True)
     inline_used = [0]
     outputs, texts = await asyncio.to_thread(_collect_outputs, history, prompt, job, inline_used)
