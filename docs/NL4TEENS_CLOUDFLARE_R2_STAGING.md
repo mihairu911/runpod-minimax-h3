@@ -58,3 +58,23 @@ To verify the private S3 video delivery path **without another inference**, the 
 ```
 
 This operation returns temporary S3 signed GET URL and the prior MP4 QC, and must not modify the source video. Never log or commit the signed URL. Default on production: `NL4TEENS_ALLOW_REPUBLISH_EXISTING=false`. A successful republish does NOT establish successful new video inference; resolve 900s timeout separately.
+
+## Direct Cloudflare Worker downloads — 2026-11-20
+
+A private R2-bound Worker has been deployed as `nl4teens-private-download`:
+
+`https://nl4teens-private-download.mihairu911.workers.dev`
+
+- Worker code: `cloudflare/nl4teens-download.mjs`; independent Node contract tests: `tests/test_cloudflare_worker.mjs`.
+- R2 binding: `VIDEOS` -> existing private `nl4teens-video` bucket; **no public R2 bucket access**.
+- A 256-bit random URL-safe capability token lives in the **path** `/v/<token>/<safe_filename>`.
+- RunPod uploads video under `nl4teens/artifacts/<job>/<filename>` and one private sidecar JSON under `nl4teens/links/<token>.json`, with `{v:1,key,expiresAt}` and expiry 1 hour.
+- Worker fetches sidecar, verifies token, expiration, artifact prefix and filename, then streams the R2 video. It intentionally **ignores unrelated query parameters** such as `utm_source=chatgpt.com`.
+- Invalid/expired links 404. Only GET/HEAD supported; HTTP Range 206 and normal GET 200 supported. `Cache-Control: private, no-store`; no object list endpoint.
+- Lifecycle policy cleans link sidecars after 24 hours and artifacts after 7 days.
+- For `nl4teens-video`, `signed_media_upload` now returns `delivery=worker_token_url` rather than a fragile S3 SigV4 query-signature URL. Generic non-project S3 buckets still use signed SigV4 URLs.
+- Worker and Cloudflare R2 integration HTTP verified externally on the previous 976195-byte MP4: normal GET and GET with `utm_source=chatgpt.com` downloaded **identical SHA-256** `ff24d4d786b4ce1624fc806df4fd3be61a7050113a3f4ef868f83f70b3e0acb1`; byte range GET 206; invalid token 404; HEAD 200.
+- This proves the Worker route. The updated **RunPod-generated token sidecar** still needs a staging integration smoke through `r2_republish_existing`, before replacing production.
+- Manual staging fixture link expires after 1 hour; do not embed expired links in documentation or commit sensitive bearer URLs.
+
+**Security:** Treat every token URL as a secret until expiry. Do not log the URL or raw token. Neither a signing key nor an OAuth access token is needed in the Worker.
