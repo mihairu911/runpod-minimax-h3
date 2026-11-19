@@ -79,6 +79,23 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as reply:
                   print("Anonymous image pull verified:", reply.status)
                   print("Digest:", reply.headers.get("Docker-Content-Digest", "not supplied"))
+                  manifest = json.load(reply)
+              if "manifests" in manifest:
+                  builds = [m for m in manifest["manifests"] if m.get("platform", {}).get("os") == "linux" and m.get("platform", {}).get("architecture") == "amd64"]
+                  if not builds:
+                      raise RuntimeError("no linux/amd64 image found")
+                  digest = builds[0]["digest"]
+                  child = urllib.request.Request(
+                      "https://ghcr.io/v2/" + image + "/manifests/" + digest,
+                      headers={"Authorization": "Bearer " + token,
+                               "Accept": "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"},
+                  )
+                  with urllib.request.urlopen(child, timeout=30) as response:
+                      manifest = json.load(response)
+              layers = manifest.get("layers", [])
+              total = sum(x.get("size", 0) for x in layers)
+              print("Compressed Docker layers:", len(layers), "total GiB:", round(total / (1024 ** 3), 2))
+              print("Largest layers GiB:", [round(x.get("size", 0) / (1024 ** 3), 2) for x in sorted(layers, key=lambda x: x.get("size", 0), reverse=True)[:5]])
           except urllib.error.HTTPError as error:
               print("GHCR anonymous pull rejected:", error.code)
               raise SystemExit(1)
