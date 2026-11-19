@@ -86,3 +86,14 @@ New helper: `nl4teens_diagnostics.py`. Included in both Dockerfiles
 and the CI compile/test jobs. The old production image is unchanged.
 Do not merge the candidate PR or switch production until a fresh
 generation completes end-to-end.
+
+
+## Five-second run: per-job ComfyUI timeout experiment (2026-11-20)
+
+Two-second MiniMax H3 T2VA **succeeded** on staging v6 with a QwenVL duration override, executing for 502.9s total and 483.7s inside ComfyUI. Delivery of the NEW 359245-byte H.264/AAC clip through private R2 and Cloudflare Worker was independently verified via 200 full GET, 200 GET with `utm_source=chatgpt.com`, and Range 206 with matching SHA256. The original five-second run had hit 900s, so a longer window is justified for ONE diagnostic test.
+
+The current staging v7 image automatically clamps the QwenVL text-enhancer `duration` dropdown to one of `5s/10s/15s/20s` while preserving the requested video duration. The environment still contains `JOB_TIMEOUT_S=900`, and it must NOT be replaced through a full env patch because the staging environment contains nonexportable R2 credentials.
+
+New handler accepts an optional **per-job** `input.comfy_timeout_s` (clamped to 60..3600 seconds). The value changes only the internal ComfyUI polling deadline, without reading or rewriting endpoint environment. Use `comfy_timeout_s=1800` (30m), outer endpoint timeout 2100000 ms (35m), single worker min=0/max=1, explicit 5s/576x1024/T2VA, `enhance=false,upscale=false,rife=false`, `require_audio=true,require_delivery=true`. Existing volume journal and Worker download verification remain enabled.
+
+**Budget:** at most one 5-second paid GPU inference, maximum 35m execution, and immediate cleanup staging max=0 and any CPU diagnostic Pod. No production changes. If the render still fails, inspect per-job events and ComfyUI log before resubmitting. Never log API secrets or temporary Worker bearer links in a public repository.
