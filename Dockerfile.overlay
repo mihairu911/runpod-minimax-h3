@@ -1,0 +1,8 @@
+# Fast code-only rebuilds on top of the tested full MiniMax H3 candidate.
+# Pin the immutable digest so a later retag cannot silently change the base.
+# For updates to ComfyUI custom nodes/dependencies, rebuild using Dockerfile.
+FROM ghcr.io/mihairu911/runpod-minimax-h3@sha256:369cf8fa0cebbb3897e89c8b17aaed1777765b0177816fb70dee00a58cb4ba28
+
+COPY handler.py /opt/serverless/handler.py
+COPY --chmod=755 serverless-entrypoint.sh /opt/serverless/entrypoint.sh
+COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
