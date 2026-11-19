@@ -7,3 +7,4 @@ COPY handler.py /opt/serverless/handler.py
 COPY --chmod=755 serverless-entrypoint.sh /opt/serverless/entrypoint.sh
 COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
 COPY nl4teens_pipeline.py /opt/serverless/nl4teens_pipeline.py
+COPY nl4teens_diagnostics.py /opt/serverless/nl4teens_diagnostics.py
