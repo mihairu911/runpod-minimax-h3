@@ -157,7 +157,11 @@ def optional_delivery_cfg(job, env=None):
         "bucketName": "NL4TEENS_S3_BUCKET",
     }
     cfg = {k: env.get(v) for k, v in mapping.items()}
-    return cfg if all(cfg.values()) else None
+    if not all(cfg.values()):
+        return None
+    if env.get("NL4TEENS_S3_REGION"):
+        cfg["region"] = env["NL4TEENS_S3_REGION"]
+    return cfg
 
 
 def signed_media_upload(data, filename, job, cfg, make_client, ttl=3600):
