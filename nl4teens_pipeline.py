@@ -165,22 +165,52 @@ def optional_delivery_cfg(job, env=None):
 
 
 def signed_media_upload(data, filename, job, cfg, make_client, ttl=3600):
-    """Upload to external S3-compatible bucket and return an expiring GET URL."""
+    """Upload a video to S3, issuing Worker capability URLs for N&L's R2 bucket.
+
+    The Worker ignores unrelated query params, so ChatGPT's utm_source tracking
+    cannot invalidate the link. No Worker signing secret is shared with RunPod.
+    Other S3-compatible buckets retain ordinary S3 SigV4 presigned URLs.
+    """
     if cfg is None:
         return {"delivery": "volume_only"}
-    safe_name = Path(filename).name
-    jid = "".join(c if c.isalnum() or c in "_.-" else "_" for c in str(job.get("id") or "job"))[:100]
+    import re
+    import secrets
+    import time
+    original = Path(str(filename)).name
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", original)[:200]
+    if not safe_name.lower().endswith(VIDEO_EXT) or safe_name in ("", ".", ".."):
+        raise ValueError("delivery: unsafe video filename")
+    jid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(job.get("id") or "job"))[:100]
     key = "nl4teens/artifacts/" + jid + "/" + safe_name
     client = make_client(cfg)
     client.put_object(Bucket=cfg["bucketName"], Key=key, Body=data,
                       ContentType="video/mp4" if safe_name.lower().endswith(".mp4")
-                      else "application/octet-stream")
+                      else "video/webm" if safe_name.lower().endswith(".webm")
+                      else "video/quicktime")
+
+    host = (urllib.parse.urlparse(cfg["endpointUrl"]).hostname or "").lower()
+    is_project_r2 = (host.endswith(".r2.cloudflarestorage.com")
+                     and cfg["bucketName"] == "nl4teens-video")
+    if is_project_r2:
+        expires_in = max(60, min(int(ttl), 3600))
+        token = secrets.token_urlsafe(32)
+        metadata_key = "nl4teens/links/" + token + ".json"
+        metadata = {"v": 1, "key": key, "expiresAt": int(time.time()) + expires_in}
+        client.put_object(Bucket=cfg["bucketName"], Key=metadata_key,
+                          Body=json.dumps(metadata, separators=(",", ":")).encode(),
+                          ContentType="application/json", CacheControl="no-store")
+        base = "https://nl4teens-private-download.mihairu911.workers.dev"
+        return {"delivery": "worker_token_url",
+                "url": f"{base}/v/{token}/{safe_name}",
+                "url_ttl_seconds": expires_in}
+
+    expires_in = max(60, min(int(ttl), 604800))
     url = client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": cfg["bucketName"], "Key": key},
-        ExpiresIn=max(60, min(int(ttl), 604800)),
+        "get_object", Params={"Bucket": cfg["bucketName"], "Key": key},
+        ExpiresIn=expires_in,
     )
-    return {"delivery": "signed_url", "url": url, "url_ttl_seconds": max(60, min(int(ttl), 604800))}
+    return {"delivery": "signed_url", "url": url,
+            "url_ttl_seconds": expires_in}
 
 
 def r2_delivery_smoke_test(cfg, make_client, job_id, urlopen=None):
