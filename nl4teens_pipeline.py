@@ -9,10 +9,7 @@ import urllib.parse
 from pathlib import Path
 
 VIDEO_EXT = (".mp4", ".webm", ".mov")
-SAVER_TYPES = {
-    "VHS_VideoCombine", "SaveVideo", "SaveAnimatedWEBP",
-    "SaveAnimatedPNG", "SaveVideoAsWebm",
-}
+SAVER_TYPES = {"VHS_VideoCombine", "SaveVideo", "SaveVideoAsWebm"}
 MODEL_INPUTS = {
     "UNETLoader": ("unet_name",),
     "VAELoader": ("vae_name",),
@@ -76,9 +73,8 @@ def preflight_models(prompt, object_info):
 def expects_video(prompt):
     return any(
         isinstance(n, dict) and
-        (str(n.get("class_type", "")) in SAVER_TYPES or
-         (str(n.get("class_type", "")) == "VHS_VideoCombine" and
-          (n.get("inputs") or {}).get("save_output", True)))
+        str(n.get("class_type", "")) in SAVER_TYPES and
+        (n.get("inputs") or {}).get("save_output", True) is not False
         for n in prompt.values()
     )
 
