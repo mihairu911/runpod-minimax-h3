@@ -33,7 +33,7 @@ def harness(missing=False):
             "unet_name": [["installed.safetensors"]]
         }}}}
     env = {
-        "asyncio": asyncio, "Path": pathlib.Path, "time": time,
+        "asyncio": asyncio, "Path": pathlib.Path, "time": time, "os": os,
         "_ensure_comfy": ensure, "_prune_volume_outputs": lambda: None,
         "_load_workflow": lambda path: graph,
         "_patch": lambda prompt, job: prompt,
