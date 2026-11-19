@@ -25,8 +25,9 @@ def harness(missing=False):
                 "inputs": {"save_output": True}},
     }
     async def ensure(): calls.append("ensure_comfy")
-    async def queue(prompt, job_id=None):
+    async def queue(prompt, job_id=None, wait_s=None):
         calls.append("render_started")
+        calls.append(("timeout_s", wait_s))
         return {"outputs": {}}
     def object_info(cls):
         return {"UNETLoader": {"input": {"required": {
@@ -79,6 +80,21 @@ class HandlerContractTests(unittest.TestCase):
             asyncio.run(handle(payload))
         self.assertIn("render_started", calls)
 
+
+    def test_custom_timeout_is_propagated_to_comfy(self):
+        handle, calls = harness()
+        payload = {"id": "timeout-smoke", "input": {
+            "workflow": "dummy.json", "comfy_timeout_s": 1800}}
+        with self.assertRaisesRegex(RuntimeError, "Video output missing"):
+            asyncio.run(handle(payload))
+        self.assertIn(("timeout_s", 1800), calls)
+
+    def test_default_comfy_timeout_does_not_override_environment(self):
+        handle, calls = harness()
+        payload = {"id": "default-smoke", "input": {"workflow": "dummy.json"}}
+        with self.assertRaisesRegex(RuntimeError, "Video output missing"):
+            asyncio.run(handle(payload))
+        self.assertIn(("timeout_s", None), calls)
 
     def test_republish_rejects_other_videos(self):
         handle, calls = harness()
