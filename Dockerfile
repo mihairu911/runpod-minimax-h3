@@ -64,6 +64,7 @@ RUN mkdir -p /opt/comfyui-baked/models/{vae,vae_approx,diffusion_models,unet,tex
 COPY handler.py /opt/serverless/handler.py
 COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
 COPY nl4teens_pipeline.py /opt/serverless/nl4teens_pipeline.py
+COPY nl4teens_diagnostics.py /opt/serverless/nl4teens_diagnostics.py
 COPY serverless-entrypoint.sh /opt/serverless/entrypoint.sh
 COPY populate-volume.sh /opt/serverless/populate-volume.sh
 COPY models-manifest.txt /opt/serverless/models-manifest.txt
