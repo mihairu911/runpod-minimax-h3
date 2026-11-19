@@ -36,3 +36,25 @@ If Cloudflare keys have not been added or cannot be verified, stop; do not updat
 - Never copy temporary signed R2 download URLs into public logs; presigned URLs grant anyone possessing them access until expiration.
 - Cloudflare R2 permissions are bucket-scoped and persistent; the ChatGPT Cloudflare OAuth lifecycle is irrelevant to worker-side API access.
 - After acceptance, rollout the candidate image and credentials to production with backup of v8 config; keep the PR as draft until successful acceptance.
+
+
+## Post-timeout video delivery validation (2026-11-20)
+
+The isolated real T2VA job `5fe10af6-14fa-4d97-9196-c292d5684cfb-u1` hit its 900-second execution limit and returned `FAILED: executionTimeout exceeded`. No new MP4 exists under its autosave directory and no R2 artifact was uploaded. This does **not** negate the successful prior S3 smoke test.
+
+An earlier **valid and independently checksum-verified** video remains on Global Volume:
+
+- Source job: `0f42bcac-49c9-4091-af0b-38f7b1bcad0d-u2`
+- Filename: `MMH3_T2VA_2026-11-19_00001-audio.mp4`
+- Size: 976195 bytes, SHA-256: `ff24d4d786b4ce1624fc806df4fd3be61a7050113a3f4ef868f83f70b3e0acb1`
+
+To verify the private S3 video delivery path **without another inference**, the handler now has a staging-gated `action=r2_republish_existing` that reads only videos from `NL4TEENS_OUTPUT_ROOT/<source_job_id>/<source_filename>`, applies ffprobe QC and uploads to R2. Enable `NL4TEENS_ALLOW_REPUBLISH_EXISTING=true` on the **test endpoint only** and submit:
+
+```json
+{"input":{"action":"r2_republish_existing",
+          "source_job_id":"0f42bcac-49c9-4091-af0b-38f7b1bcad0d-u2",
+          "source_filename":"MMH3_T2VA_2026-11-19_00001-audio.mp4",
+          "require_audio":true}}
+```
+
+This operation returns temporary S3 signed GET URL and the prior MP4 QC, and must not modify the source video. Never log or commit the signed URL. Default on production: `NL4TEENS_ALLOW_REPUBLISH_EXISTING=false`. A successful republish does NOT establish successful new video inference; resolve 900s timeout separately.
