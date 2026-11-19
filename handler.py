@@ -33,6 +33,8 @@ import uuid
 from pathlib import Path
 
 import runpod
+from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
+                              optional_delivery_cfg, signed_media_upload)
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
 COMFY_URL = "http://127.0.0.1:8188"
@@ -813,7 +815,25 @@ def _emit_file(filename, data, job, inline_used):
     """Small outputs inline as b64; large ones upload to the job's s3Config
     storage (e.g. the RunPod network volume S3 API) and return a presigned URL."""
     if Path(str(filename)).suffix.lower() in (".mp4", ".webm", ".mov"):
-        return _nl_autosave_file(filename, data, job)
+        result = _nl_autosave_file(filename, data, job)
+        inputs = job.get("input") or {}
+        result["qc"] = inspect_video(
+            result["volume_path"], expected_seconds=inputs.get("seconds"),
+            require_audio=bool(inputs.get("require_audio", False)))
+        cfg = optional_delivery_cfg(job)
+        if cfg:
+            try:
+                result.update(signed_media_upload(
+                    data, filename, job, cfg, _s3_client,
+                    ttl=os.environ.get("NL4TEENS_S3_URL_TTL_S", "3600")))
+            except Exception as exc:
+                result["delivery"] = "upload_failed"
+                print(f"[nl4teens] optional signed delivery failed: {type(exc).__name__}", flush=True)
+                if inputs.get("require_delivery"):
+                    raise RuntimeError("required signed delivery failed") from exc
+        else:
+            result["delivery"] = "volume_only"
+        return result
     oversized = len(data) > INLINE_MAX or inline_used[0] + len(data) > INLINE_BUDGET
     s3c = _s3_cfg(job)
     if oversized and s3c:
@@ -834,6 +854,11 @@ def _emit_file(filename, data, job, inline_used):
         print(f"[handler] {filename}: {len(data)/1e6:.1f}MB over inline limit, no s3Config — result may be dropped by RunPod", flush=True)
     inline_used[0] += len(data)
     return {"filename": filename, "b64": base64.b64encode(data).decode()}
+
+
+def _preflight_object_info(cls):
+    url = "/object_info/" + urllib.parse.quote(cls, safe="")
+    return json.loads(_http(url, timeout=30))
 
 
 def _prune_volume_outputs(max_age_s=86400):
@@ -931,6 +956,13 @@ async def handler(job):
         wf = _load_workflow(inputs.get("workflow") or "")
         prompt = await asyncio.to_thread(_patch, wf, inputs)
     prompt = _apply_node_params(prompt, inputs.get("params"))
+    model_check = await asyncio.to_thread(preflight_models, prompt, _preflight_object_info)
+    print(f"[handler] model preflight passed: {model_check['models_checked']} checked", flush=True)
+    if inputs.get("action") == "preflight":
+        return {"status": "ok", "preflight": model_check, "node_count": len(prompt),
+                "expects_video": any(
+                    (n.get("class_type") in ("VHS_VideoCombine", "SaveVideo", "SaveVideoAsWebm"))
+                    for n in prompt.values() if isinstance(n, dict))}
     print(f"[handler] queuing prompt ({len(prompt)} nodes)", flush=True)
     started = time.time()
     comfy_log = Path("/workspace/comfy.log")
@@ -951,8 +983,9 @@ async def handler(job):
     if not outputs:
         outputs = _collect_new_files(started, job, inline_used)
         print(f"[handler] fallback sweep — {len(outputs)} file(s) in output/", flush=True)
+    validate_video_outputs(prompt, outputs)
     print(f"[handler] done — {len(outputs)} output(s)", flush=True)
-    return {"outputs": outputs, "texts": texts}
+    return {"outputs": outputs, "texts": texts, "preflight": model_check}
 
 
 if __name__ == "__main__":
