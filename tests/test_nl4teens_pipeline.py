@@ -106,6 +106,33 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(p.signed_media_upload(b"xyz", "test.mp4", {"id":"job"}, None, None),
                          {"delivery": "volume_only"})
 
+    def test_r2_worker_token_sidecar_is_private_and_short_lived(self):
+        from urllib.parse import urlparse
+        calls = []
+        class R2:
+            def put_object(self, **kw):
+                calls.append(kw)
+            def generate_presigned_url(self, *a, **k):
+                self.fail("R2 should use a Worker token instead of S3 SigV4")
+        cfg = {"bucketName": "nl4teens-video",
+               "endpointUrl": "https://a.r2.cloudflarestorage.com",
+               "accessId": "access", "accessSecret": "secret"}
+        result = p.signed_media_upload(
+            b"MP4", "test.mp4", {"id": "sample/123"}, cfg,
+            lambda opts: R2(), ttl=3600)
+        self.assertEqual(result["delivery"], "worker_token_url")
+        self.assertEqual(result["url_ttl_seconds"], 3600)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["Key"], "nl4teens/artifacts/sample_123/test.mp4")
+        self.assertTrue(calls[1]["Key"].startswith("nl4teens/links/"))
+        self.assertTrue(calls[1]["Key"].endswith(".json"))
+        meta = json.loads(calls[1]["Body"])
+        self.assertEqual(meta["v"], 1)
+        self.assertEqual(meta["key"], calls[0]["Key"])
+        self.assertTrue(result["url"].endswith("/test.mp4"))
+        self.assertNotIn("secret", str(result))
+        self.assertNotIn("X-Amz-", result["url"])
+
     def test_signed_url_generated_from_secret_config(self):
         calls = []
         class FakeClient:
@@ -147,7 +174,10 @@ class RepublishTests(unittest.TestCase):
                     "status": "ok", "duration_seconds": 5.167,
                     "audio_present": True}):
                 result = p.republish_existing_video(job, lambda cfg: Client(), root=root)
-            self.assertEqual(result["delivery"], "signed_url")
+            self.assertEqual(result["delivery"], "worker_token_url")
+            self.assertTrue(result["url"].startswith(
+                "https://nl4teens-private-download.mihairu911.workers.dev/v/"))
+            self.assertNotIn("X-Amz-Signature", result["url"])
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["bytes"], saved.stat().st_size)
             self.assertTrue(result["qc"]["audio_present"])
