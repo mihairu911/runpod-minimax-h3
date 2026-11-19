@@ -62,6 +62,7 @@ RUN mkdir -p /opt/comfyui-baked/models/{vae,vae_approx,diffusion_models,unet,tex
 # Serverless entrypoint + handler + workflow templates (API format)
 # ──────────────────────────────────────────────────────────────────────────────
 COPY handler.py /opt/serverless/handler.py
+COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
 COPY serverless-entrypoint.sh /opt/serverless/entrypoint.sh
 COPY populate-volume.sh /opt/serverless/populate-volume.sh
 COPY models-manifest.txt /opt/serverless/models-manifest.txt
