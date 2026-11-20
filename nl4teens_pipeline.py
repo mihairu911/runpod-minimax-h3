@@ -314,7 +314,7 @@ def validated_reference_image(relative_path, root=None):
     """
     import re
     if (not isinstance(relative_path, str)
-        or not re.fullmatch(r"inputs/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,139}\\.(?:jpg|jpeg|png|webp)", relative_path, re.I)):
+        or not re.fullmatch(r"inputs/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,139}\.(?:jpg|jpeg|png|webp)", relative_path, re.I)):
         raise ValueError("start frame: invalid relative input path")
     base = Path(root or os.environ.get("NL4TEENS_REF_ROOT",
             "/runpod-volume/references/nl4teens/v1")).resolve()
@@ -325,8 +325,8 @@ def validated_reference_image(relative_path, root=None):
     if not (1024 <= length <= 15_000_000):
         raise ValueError("start frame: image size outside safe bounds")
     data = path.read_bytes()
-    valid = (data.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
-             or data.startswith(b"\\xff\\xd8\\xff")
+    valid = (data.startswith(bytes.fromhex("89504e470d0a1a0a"))
+             or data.startswith(bytes.fromhex("ffd8ff"))
              or (data.startswith(b"RIFF") and data[8:12] == b"WEBP"))
     if not valid:
         raise ValueError("start frame: invalid image magic")
