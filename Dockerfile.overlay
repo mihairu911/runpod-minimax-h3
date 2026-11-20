@@ -18,3 +18,7 @@ RUN set -eux; \
     git -C "$node_dir" remote add origin https://github.com/entropicnoise/MiniMax-H3-Combined-Image-And-Reference-to-Video.git; \
     git -C "$node_dir" fetch --depth 1 origin 40c74969fd805174bf3e1aed1f83f66ef7de6838; \
     git -C "$node_dir" checkout --detach FETCH_HEAD
+
+# Only staging uses this overlay. Allow authenticated RunPod jobs to republish
+# already-QC'd videos from the restricted auto-output directory into private R2.
+ENV NL4TEENS_ALLOW_REPUBLISH_EXISTING=true
