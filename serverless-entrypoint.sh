@@ -8,19 +8,26 @@ set -e
 export PATH="/workspace/runpod-slim/ComfyUI/.venv-${VENV_SUFFIX:-cu130}/bin:$PATH"
 
 PREP_DONE="${PREP_DONE:-/tmp/comfy-prep.done}"
-rm -f "$PREP_DONE"
+PREP_ERROR="${PREP_DONE}.error"
+rm -f "$PREP_DONE" "$PREP_ERROR"
 
 (
     set -e
-    trap 'touch "$PREP_DONE"' EXIT
+    prep_start=$(date +%s)
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "exit_code=%s\\n" "$rc" > "$PREP_ERROR"; fi; touch "$PREP_DONE"; echo "[prep] finished rc=$rc duration=$(($(date +%s)-prep_start))s" ' EXIT
 
     COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
     BAKED="/opt/comfyui-baked"
 
     if [ ! -f "$COMFYUI_DIR/main.py" ]; then
-        echo "Materializing baked ComfyUI into workspace..."
-        mkdir -p "$COMFYUI_DIR"
-        cp -a "$BAKED/." "$COMFYUI_DIR/"
+        if [ "${NL4TEENS_FAST_BOOT:-false}" = "true" ]; then
+            echo "[prep] using zero-copy ComfyUI workspace"
+            python3 /opt/serverless/prepare_workspace.py "$BAKED" "$COMFYUI_DIR"
+        else
+            echo "[prep] materializing baked ComfyUI (legacy copy mode)"
+            mkdir -p "$COMFYUI_DIR"
+            cp -a "$BAKED/." "$COMFYUI_DIR/"
+        fi
     fi
 
     # Models live on the RunPod network volume — populated once by

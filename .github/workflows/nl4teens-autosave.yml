@@ -1,0 +1,107 @@
+name: N&L autosave image
+
+on:
+  push:
+    branches: [nl4teens-autosave]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: nl4teens-autosave-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python
+        run: python -m py_compile handler.py prepare_workspace.py nl4teens_pipeline.py nl4teens_diagnostics.py
+      - name: Validate entrypoint syntax
+        run: bash -n serverless-entrypoint.sh
+      - name: Autosave and startup regression tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Cloudflare Worker runtime contract tests
+        run: node --test tests/test_cloudflare_worker.mjs
+
+  build:
+    if: "github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[build]')) || (github.event_name == 'pull_request' && github.head_ref == 'nl4teens-autosave')"
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.overlay
+          push: true
+          tags: ghcr.io/${{ github.repository }}:autosave-test
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            nl4teens.autosave.version=direct-handler-v1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  public_pull_probe:
+    if: "github.event_name == 'push' && github.event.head_commit.message == 'ci: probe GHCR public access'"
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check anonymous GHCR manifest pull
+        run: |
+          python - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse
+          image = os.environ["GITHUB_REPOSITORY"].lower()
+          scope = urllib.parse.quote("repository:" + image + ":pull")
+          url = "https://ghcr.io/token?service=ghcr.io&scope=" + scope
+          try:
+              with urllib.request.urlopen(url, timeout=20) as reply:
+                  token = json.load(reply)["token"]
+              request = urllib.request.Request(
+                  "https://ghcr.io/v2/" + image + "/manifests/autosave-test",
+                  headers={
+                      "Authorization": "Bearer " + token,
+                      "Accept": "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as reply:
+                  print("Anonymous image pull verified:", reply.status)
+                  print("Digest:", reply.headers.get("Docker-Content-Digest", "not supplied"))
+                  manifest = json.load(reply)
+              if "manifests" in manifest:
+                  builds = [m for m in manifest["manifests"] if m.get("platform", {}).get("os") == "linux" and m.get("platform", {}).get("architecture") == "amd64"]
+                  if not builds:
+                      raise RuntimeError("no linux/amd64 image found")
+                  digest = builds[0]["digest"]
+                  child = urllib.request.Request(
+                      "https://ghcr.io/v2/" + image + "/manifests/" + digest,
+                      headers={"Authorization": "Bearer " + token,
+                               "Accept": "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"},
+                  )
+                  with urllib.request.urlopen(child, timeout=30) as response:
+                      manifest = json.load(response)
+              layers = manifest.get("layers", [])
+              total = sum(x.get("size", 0) for x in layers)
+              print("Compressed Docker layers:", len(layers), "total GiB:", round(total / (1024 ** 3), 2))
+              print("Largest layers GiB:", [round(x.get("size", 0) / (1024 ** 3), 2) for x in sorted(layers, key=lambda x: x.get("size", 0), reverse=True)[:5]])
+          except urllib.error.HTTPError as error:
+              print("GHCR anonymous pull rejected:", error.code)
+              raise SystemExit(1)
+          PY

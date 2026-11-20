@@ -1,0 +1,332 @@
+{
+  "126": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "NL4teens_SHTAB_test10_MultiRef",
+      "format": "video/webm",
+      "pix_fmt": "yuv420p",
+      "crf": 17,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "105:10",
+        0
+      ],
+      "audio": [
+        "105:23",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "48FPS"
+    }
+  },
+  "test10_first_frame": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "firstframe.webp"
+    }
+  },
+  "test10_liza": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "liza.webp"
+    }
+  },
+  "test10_mark": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "mark.webp"
+    }
+  },
+  "test10_book": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "book.webp"
+    }
+  },
+  "test10_medallion": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "medallion.webp"
+    }
+  },
+  "test10_room": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "room.webp"
+    }
+  },
+  "105:6": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Carica modello di diffusione"
+    }
+  },
+  "105:13": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Carica CLIP"
+    }
+  },
+  "105:11": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Carica VAE"
+    }
+  },
+  "105:24": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Carica VAE"
+    }
+  },
+  "105:14": {
+    "inputs": {
+      "noise": [
+        "105:15",
+        0
+      ],
+      "guider": [
+        "105:16",
+        0
+      ],
+      "sampler": [
+        "105:192",
+        0
+      ],
+      "sigmas": [
+        "105:9",
+        0
+      ],
+      "latent_image": [
+        "105:224",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "105:10": {
+    "inputs": {
+      "samples": [
+        "105:14",
+        0
+      ],
+      "vae": [
+        "105:11",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Decodifica VAE"
+    }
+  },
+  "105:23": {
+    "inputs": {
+      "samples": [
+        "105:14",
+        0
+      ],
+      "vae": [
+        "105:24",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "Decodifica audio VAE"
+    }
+  },
+  "105:16": {
+    "inputs": {
+      "model": [
+        "105:193",
+        0
+      ],
+      "conditioning": [
+        "105:224",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Guida Base"
+    }
+  },
+  "105:15": {
+    "inputs": {
+      "noise_seed": 20261123
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "105:192": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "105:9": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 8,
+      "denoise": 1,
+      "model": [
+        "105:193",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "Scheduler Base"
+    }
+  },
+  "105:193": {
+    "inputs": {
+      "shift_video": 12,
+      "shift_audio": 4,
+      "model": [
+        "105:254",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "ModelSamplingMiniMaxH3"
+    }
+  },
+  "105:254": {
+    "inputs": {
+      "selection": "sol-attn",
+      "selection.tau": 1.3,
+      "start_percent": 0.2,
+      "end_percent": 1,
+      "dense_blocks": "",
+      "min_tokens": 12288,
+      "extra_tokens": 256,
+      "sink_conditioning": "exact_kv_and_rows",
+      "verbose": false,
+      "model": [
+        "105:261",
+        0
+      ]
+    },
+    "class_type": "BlockSparseAttention",
+    "_meta": {
+      "title": "Attenzione sparsa del modello"
+    }
+  },
+  "105:261": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "105:6",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "Backend di attenzione del modello"
+    }
+  },
+  "105:111": {
+    "inputs": {
+      "value": 5
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Float (duration)"
+    }
+  },
+  "105:107": {
+    "inputs": {
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
+      "values.a": [
+        "105:111",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "Espressione Matematica"
+    }
+  },
+  "105:224": {
+    "class_type": "MiniMaxH3CombinedImageAndReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "105:13",
+        0
+      ],
+      "vae": [
+        "105:11",
+        0
+      ],
+      "audio_vae": [
+        "105:24",
+        0
+      ],
+      "prompt": "SILENT SCORE: absolutely no music of any kind. No sustained notes, no drones, no pads, no hums, no swells, no risers, no atmospheric or ambient instrumental sounds, no cinematic sound design. Only natural diegetic sounds.\n\nsubject_definitions:\n<Subject 1> is Liza, the blonde teenage girl in <Picture 1>. Match her exact face, long wavy hair, ivory blouse and dark pleated skirt from the reference; do not change trousers, haircut or identity.\n<Subject 2> is Mark, the dark-haired boy with round glasses, tan jacket, grey hoodie and jeans from <Picture 2>. Keep his face, glasses and outfit identical.\n<Picture 3> defines the ONE burgundy aged book, its embossed cover, thick pages and exact proportions. It is an appearance-only reference, never an entire video frame.\n<Picture 4> defines the ornate silver filigree oval medallion, a prop detail on the book; avoid floating jewelry or generating a new object elsewhere.\n<Picture 5> defines the real headquarters attic interior: wood beams, corkboard, vintage television, window, warm lamp, furnishings. It is architectural reference, not a camera/keyframe shot.\n\nsummary:\n[keyframe completion + reference generation] A single realistic low-angle shot begins on the EXACT supplied first_frame image (not a ref picture) of an old wooden trunk, blue pencil, paper maps and a seated blurry Mark. A single burgundy book falls onto this same trunk. Focus then transitions to Mark while the camera gently drifts to reveal Liza at the window. No cuts.\n\nretention_analysis:\nfully_preserved: target frame 0 exactly equals the connected first_frame image. Retain the ONE wooden trunk in foreground, notebook, pencil and map positions, existing beanbag and seated boy, camera perspective, and warm ambient lighting. Never replace the source first frame with Picture 5's higher room viewpoint.\npartially_preserved: copy Liza's face and clothes ONLY from <Picture 1>; Mark's identity and glasses ONLY from <Picture 2>; the actual single fallen book ONLY from <Picture 3>; the subtle medallion motif ONLY from <Picture 4>; the attic room's continuous design ONLY from <Picture 5>. Reference images must never appear as inserted frames, sheets, posters, duplicate people or duplicate props.\n\ndetailed_description:\nVertical 9:16 single continuous photorealistic camera shot. At 0.00 seconds keep every pixel and shot layout from first_frame, the trunk in close sharp foreground and Mark already seated on the beanbag in strong shallow-focus blur. At 0.10 to 0.95 seconds a single book is already falling through the upper frame by gravity; nobody throws it on camera; it falls naturally and settles on the trunk by about 1.0 seconds with a small paper flutter. NO hand, NO Tyoma, NO Kira. Avoid book teleportation, multiple books or a second chest.\nFrom 1.0 to 2.8 seconds slowly rack focus from foreground book toward seated Mark, revealing his exact face without changing his pose. Mark remains sitting for the whole video. A very gentle lateral camera slide with matching perspective, like the good motion in Test 9, gradually reveals the window and Liza at the far side of the room without a cut, without jumping the room geometry and without adding new people. She is already standing there, initially turned away; she turns toward the falling book near the end. Her exact outfit, hair and face must match <Picture 1>. Never have another unidentified silhouette manifest by the window. The foreground trunk remains ONE same object. Stop the move as soon as Liza is visible. Avoid CGI textures; preserve intricate real wood grain, detailed paper edges, realistic skin, sharp fabric texture, physically consistent lighting. No black bars.\n\noverall_soundscape:\nOnly natural non-musical sounds: short book air movement, a clear heavy leatherbound-book impact on wood around 0.9-1.1s, soft paper rustle and quiet indoor room tone. No speech or vocalizations in this geometry pass; Liza's Russian line is added later using the approved Qwen3-TTS+LatentSync voice pipeline, not generated here.\n\nnon_diegetic_music:\nN/A. Absolutely no music.",
+      "resolution_source": "use provided width and height values",
+      "width": 768,
+      "height": 1376,
+      "length": [
+        "105:107",
+        1
+      ],
+      "first_frame": [
+        "test10_first_frame",
+        0
+      ],
+      "reference_resize_mode": "resize to start frame total_pixels",
+      "ref_images.ref_image_1": [
+        "test10_liza",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "test10_mark",
+        0
+      ],
+      "ref_images.ref_image_3": [
+        "test10_book",
+        0
+      ],
+      "ref_images.ref_image_4": [
+        "test10_medallion",
+        0
+      ],
+      "ref_images.ref_image_5": [
+        "test10_room",
+        0
+      ]
+    }
+  }
+}

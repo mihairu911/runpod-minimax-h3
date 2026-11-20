@@ -33,6 +33,11 @@ import uuid
 from pathlib import Path
 
 import runpod
+from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
+                              optional_delivery_cfg, signed_media_upload,
+                              r2_delivery_smoke_test, republish_existing_video,
+                              validated_reference_image)
+from nl4teens_diagnostics import worker_comfy_log_path, log_event, queue_snapshot
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
 COMFY_URL = "http://127.0.0.1:8188"
@@ -59,6 +64,7 @@ S3_PREFIX = os.environ.get("S3_OUTPUT_PREFIX", "outputs")
 # (e.g. running handler.py directly without the entrypoint).
 PREP_DONE = os.environ.get("PREP_DONE", "/tmp/comfy-prep.done")
 PREP_TIMEOUT_S = int(os.environ.get("COMFY_PREP_TIMEOUT_S", "900"))
+COMFY_LOG_PATH = Path("/workspace/comfy.log")
 
 # Config → unet filename needle + sampler values (mirrors chat_service.py _MINIMAX_CONFIGS)
 MINIMAX_CONFIGS = {
@@ -88,6 +94,7 @@ _BOOT_ERR = None
 
 
 def _boot_comfy():
+    global COMFY_LOG_PATH
     # Extra flags come from COMFYUI_EXTRA_ARGS (space-separated). Keep the
     # default empty: --fast/--use-sage-attention/--async-offload corrupt the
     # int8-convrot Qwen/MMh3 stacks (flat garbage output).
@@ -101,7 +108,11 @@ def _boot_comfy():
         # weights into flat garbage.
         "--enable-triton-backend",
     ] + os.environ.get("COMFYUI_EXTRA_ARGS", "").split()
-    comfy_log = open("/workspace/comfy.log", "ab", buffering=0)
+    # Persist the *complete* ComfyUI stdout/stderr on Global Volume. On timeout,
+    # the worker/container disappears but the tail of this file remains.
+    COMFY_LOG_PATH = worker_comfy_log_path()
+    comfy_log = open(COMFY_LOG_PATH, "ab", buffering=0)
+    print(f"[nl4teens] ComfyUI persistent logfile: {COMFY_LOG_PATH}", flush=True)
     proc = subprocess.Popen(cmd, cwd=COMFY_DIR, stdout=comfy_log, stderr=subprocess.STDOUT)
     deadline = time.time() + 600
     while time.time() < deadline:
@@ -150,9 +161,17 @@ def _sync_workflows():
 
 
 def _wait_prep():
+    # Explicit zero preserves the upstream direct-handler debug mode.
+    if PREP_TIMEOUT_S == 0:
+        return
     deadline = time.time() + PREP_TIMEOUT_S
     while not os.path.exists(PREP_DONE) and time.time() < deadline:
         time.sleep(2)
+    if not os.path.exists(PREP_DONE):
+        raise TimeoutError(f"ComfyUI workspace preparation exceeded {PREP_TIMEOUT_S}s")
+    prep_error = Path(PREP_DONE + ".error")
+    if prep_error.is_file():
+        raise RuntimeError(f"ComfyUI workspace preparation failed: {prep_error.read_text()[:300]}")
 
 
 def _boot_in_bg():
@@ -175,7 +194,7 @@ def _boot_in_bg():
 async def _ensure_comfy():
     await asyncio.to_thread(_BOOT_DONE.wait)
     if _BOOT_ERR is not None:
-        raise RuntimeError(f"ComfyUI failed to boot: {_BOOT_ERR} (see /workspace/comfy.log)")
+        raise RuntimeError(f"ComfyUI failed to boot: {_BOOT_ERR} (check persisted ComfyUI worker logs)")
 
 
 def _media_bytes(value):
@@ -328,6 +347,12 @@ def _director_timeline(job):
 
 
 def _patch(prompt, job):
+    # Never fall back to a stale image baked into the upstream I2VA graph.
+    # This has to be a true uploaded first frame, not a tiny textual reference.
+    if (any(n.get("class_type") == "MiniMaxH3ImageToVideo"
+            for n in prompt.values()) and
+            not (job.get("first_frame_path") or job.get("images"))):
+        raise ValueError("I2V requires an explicit first-frame image")
     director_nodes = [n for n in prompt.values()
                       if n.get("class_type") == "MiniMaxH3DirectorCS"]
     # Two Director flows: Native (the timeline owns the text — build it from the
@@ -347,7 +372,16 @@ def _patch(prompt, job):
     if director_nodes and cfg:
         cfg = {**cfg, "unet": None}
     base = re.sub(r"[^\w.-]+", "-", str(job.get("job_name") or f"job_{uuid.uuid4().hex[:8]}")).strip("-")
-    images = [_upload(f"{base}_{i}.png", _media_bytes(v)) for i, v in enumerate(job.get("images") or [])]
+    images = []
+    if job.get("first_frame_path"):
+        # Actual 640px+ first-frame I2V conditioning, not a 108px reference
+        # and not a text-only description. The only allowed source is a
+        # validated image under private Global Volume inputs/.
+        frame_bytes = validated_reference_image(job["first_frame_path"])
+        frame_ext = Path(job["first_frame_path"]).suffix.lower()
+        images.append(_upload(f"{base}_firstframe{frame_ext}", frame_bytes))
+    images.extend(_upload(f"{base}_extra_{i}.png", _media_bytes(v))
+                  for i, v in enumerate(job.get("images") or []))
     video_name = None
     if job.get("video"):
         video_name = _upload(f"{base}.mp4", _media_bytes(job["video"]))
@@ -374,7 +408,14 @@ def _patch(prompt, job):
             if img_idx < len(images):
                 inp["image"] = images[img_idx]
                 if "LoadImageMiniState" in inp:
-                    inp["LoadImageMiniState"] = images[img_idx]
+                    # Pixaroma expects a JSON state object. Replacing it by
+                    # an image filename silently breaks its special loader.
+                    try:
+                        state = json.loads(inp["LoadImageMiniState"])
+                        state["orig_name"] = images[img_idx]
+                        inp["LoadImageMiniState"] = json.dumps(state)
+                    except (TypeError, ValueError):
+                        raise ValueError("start frame: invalid Pixaroma loader state")
                 if "LoadImagePixState" in inp:
                     try:
                         state = json.loads(inp["LoadImagePixState"])
@@ -426,7 +467,14 @@ def _patch(prompt, job):
         if director_tdata is None and job.get("seconds"):
             sec = int(job["seconds"])
             if "duration" in inp:
-                inp["duration"] = f"{sec}s"
+                # QwenVL's duration is a constrained dropdown (5/10/15/20s).
+                # It is a *text prompt hint*, not the MiniMax sampler's latent
+                # length. For a shorter render (e.g. 2s), keep the real 2s
+                # frame count in PrimitiveFloat but supply a valid 5s hint.
+                if ct == "QwenVL_Unified_PromptEnhancer":
+                    inp["duration"] = f"{min(20, max(5, ((sec + 4) // 5) * 5))}s"
+                else:
+                    inp["duration"] = f"{sec}s"
             elif "length" in inp and not isinstance(inp["length"], list):
                 inp["length"] = sec * 24
             elif "value" in inp and ct.startswith("Primitive"):
@@ -724,7 +772,7 @@ def _interrupt_prompt(prompt_id):
             print(f"[handler] {path} failed during cancel: {exc}", flush=True)
 
 
-async def _queue_and_wait(prompt):
+async def _queue_and_wait(prompt, job_id=None, wait_s=None):
     # Async + awaited sleeps: the runpod SDK stops a job by cancelling its
     # task, so the CancelledError can only be delivered at an await — a sync
     # handler would freeze the event loop and never see the stop signal.
@@ -732,23 +780,49 @@ async def _queue_and_wait(prompt):
     resp = json.loads(await asyncio.to_thread(
         _http, "/prompt", {"prompt": prompt, "client_id": client_id}, 60))
     prompt_id = resp["prompt_id"]
-    deadline = time.time() + JOB_TIMEOUT_S
+    started = time.monotonic()
+    last_heartbeat = started
+    if job_id:
+        log_event(job_id, "queued", prompt_id=prompt_id, node_count=len(prompt),
+                  log_path=COMFY_LOG_PATH)
+    # Staging diagnostics can request a longer *per-job* ComfyUI wait without
+    # replacing the endpoint's existing secret environment variables.
+    # The outer RunPod execution limit still caps total GPU time.
+    allowed_wait_s = max(60, min(int(wait_s if wait_s is not None else JOB_TIMEOUT_S), 3600))
+    deadline = time.time() + allowed_wait_s
     try:
         while time.time() < deadline:
             hist = json.loads(await asyncio.to_thread(_http, f"/history/{prompt_id}", None, 30))
             entry = hist.get(prompt_id)
             if entry and entry.get("status", {}).get("status_str") == "error":
+                if job_id:
+                    log_event(job_id, "comfy_error", prompt_id=prompt_id,
+                              elapsed_seconds=time.monotonic() - started)
                 msgs = [str(m) for m in entry.get("status", {}).get("messages", [])]
                 raise RuntimeError(f"ComfyUI job failed: {' | '.join(msgs)[:800]}")
             if entry and entry.get("status", {}).get("completed"):
+                if job_id:
+                    log_event(job_id, "comfy_finished", prompt_id=prompt_id,
+                              elapsed_seconds=time.monotonic() - started)
                 return entry
+            if job_id and time.monotonic() - last_heartbeat >= 20:
+                last_heartbeat = time.monotonic()
+                snapshot = await asyncio.to_thread(queue_snapshot, lambda path: json.loads(_http(path, timeout=8)))
+                log_event(job_id, "heartbeat", prompt_id=prompt_id,
+                          elapsed_seconds=time.monotonic() - started, **snapshot)
             await asyncio.sleep(3)
     except asyncio.CancelledError:
+        if job_id:
+            log_event(job_id, "cancelled", prompt_id=prompt_id,
+                      elapsed_seconds=time.monotonic() - started)
         # Even if this await gets cancelled again, the orphan thread still
         # completes and ComfyUI gets interrupted.
         await asyncio.to_thread(_interrupt_prompt, prompt_id)
         raise
-    raise TimeoutError(f"prompt {prompt_id} exceeded {JOB_TIMEOUT_S}s")
+    if job_id:
+        log_event(job_id, "comfy_timeout", prompt_id=prompt_id,
+                  elapsed_seconds=time.monotonic() - started)
+    raise TimeoutError(f"prompt {prompt_id} exceeded {allowed_wait_s}s")
 
 
 def _s3_cfg(job):
@@ -761,8 +835,18 @@ def _s3_cfg(job):
 def _s3_client(cfg):
     import boto3
     from botocore.config import Config
-    host = urllib.parse.urlparse(cfg["endpointUrl"]).netloc
-    region = cfg.get("region") or host.split(".", 1)[0].removeprefix("s3api-") or "us-east-1"
+    host = (urllib.parse.urlparse(cfg["endpointUrl"]).hostname or "").lower()
+    if "r2.cloudflarestorage.com" in host:
+        default_region = "auto"
+    elif host.startswith("s3.") and host.endswith(".amazonaws.com"):
+        default_region = host.split(".")[1]
+    elif host.startswith("s3-") and host.endswith(".amazonaws.com"):
+        default_region = host.split(".")[0][3:]
+    elif host.startswith("s3api-"):
+        default_region = host.split(".")[0].removeprefix("s3api-")
+    else:
+        default_region = "us-east-1"
+    region = cfg.get("region") or default_region
     return boto3.client(
         "s3",
         endpoint_url=cfg["endpointUrl"],
@@ -773,9 +857,57 @@ def _s3_client(cfg):
     )
 
 
+
+def _nl_autosave_file(filename, data, job):
+    """Persist video to the mounted Global Volume and return compact metadata."""
+    import hashlib
+    if not data:
+        raise ValueError("empty media output")
+    name = Path(str(filename)).name
+    if name in ("", ".", ".."):
+        raise ValueError("invalid output filename")
+    jid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(job.get("id") or "job"))[:100]
+    root = Path(os.environ.get("NL4TEENS_OUTPUT_ROOT",
+        "/runpod-volume/references/nl4teens/v1/test_outputs/auto")) / jid
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / name
+    temp = root / (name + ".partial")
+    try:
+        with temp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp, dest)
+    finally:
+        temp.unlink(missing_ok=True)
+    print(f"[nl4teens] video saved: {dest} ({len(data)} bytes)", flush=True)
+    return {"filename": name, "volume_path": str(dest), "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "saved": True}
+
+
 def _emit_file(filename, data, job, inline_used):
     """Small outputs inline as b64; large ones upload to the job's s3Config
     storage (e.g. the RunPod network volume S3 API) and return a presigned URL."""
+    if Path(str(filename)).suffix.lower() in (".mp4", ".webm", ".mov"):
+        result = _nl_autosave_file(filename, data, job)
+        inputs = job.get("input") or {}
+        result["qc"] = inspect_video(
+            result["volume_path"], expected_seconds=inputs.get("seconds"),
+            require_audio=bool(inputs.get("require_audio", False)))
+        cfg = optional_delivery_cfg(job)
+        if cfg:
+            try:
+                result.update(signed_media_upload(
+                    data, filename, job, cfg, _s3_client,
+                    ttl=os.environ.get("NL4TEENS_S3_URL_TTL_S", "3600")))
+            except Exception as exc:
+                result["delivery"] = "upload_failed"
+                print(f"[nl4teens] optional signed delivery failed: {type(exc).__name__}", flush=True)
+                if inputs.get("require_delivery"):
+                    raise RuntimeError("required signed delivery failed") from exc
+        else:
+            result["delivery"] = "volume_only"
+        return result
     oversized = len(data) > INLINE_MAX or inline_used[0] + len(data) > INLINE_BUDGET
     s3c = _s3_cfg(job)
     if oversized and s3c:
@@ -796,6 +928,11 @@ def _emit_file(filename, data, job, inline_used):
         print(f"[handler] {filename}: {len(data)/1e6:.1f}MB over inline limit, no s3Config — result may be dropped by RunPod", flush=True)
     inline_used[0] += len(data)
     return {"filename": filename, "b64": base64.b64encode(data).decode()}
+
+
+def _preflight_object_info(cls):
+    url = "/object_info/" + urllib.parse.quote(cls, safe="")
+    return json.loads(_http(url, timeout=30))
 
 
 def _prune_volume_outputs(max_age_s=86400):
@@ -851,6 +988,9 @@ def _collect_outputs(history_entry, prompt, job, inline_used):
 async def handler(job):
     print(f"[handler] job {job.get('id')} received", flush=True)
     inputs = job.get("input") or {}
+    if inputs.get("action") not in ("health", "storage_smoke_test", "r2_smoke_test"):
+        log_event(job.get("id"), "received", workflow=inputs.get("workflow", ""),
+                  seconds=inputs.get("seconds", 0))
     if inputs.get("action") == "health":
         # Hub smoke test: answers 200 without touching ComfyUI or models, so it
         # also works on an endpoint deployed without the network volume.
@@ -860,9 +1000,62 @@ async def handler(job):
             "comfyui_error": str(_BOOT_ERR) if _BOOT_ERR else None,
             "workflows": sorted({p.name for d in (WF_SYNC_DIR, WORKFLOWS_DIR) for p in d.glob("*.json")}),
             "volume_mounted": os.path.isdir("/runpod-volume"),
+            "autosave": "direct-handler-v1",
+            "r2_configured": optional_delivery_cfg(job) is not None,
+            "fast_boot": os.environ.get("NL4TEENS_FAST_BOOT", "false").lower() == "true",
+            "prep_done": os.path.isfile(PREP_DONE),
+            "prep_error": (Path(PREP_DONE + ".error").read_text()[:300]
+                           if Path(PREP_DONE + ".error").is_file() else None),
         }
+    if inputs.get("action") == "storage_smoke_test":
+        result = _nl_autosave_file("nl4teens_smoke.mp4", b"NL4TEENS_STORAGE_SMOKE_V1", job)
+        p = Path(result["volume_path"])
+        try:
+            if p.read_bytes() != b"NL4TEENS_STORAGE_SMOKE_V1":
+                raise OSError("failed storage readback")
+        finally:
+            p.unlink(missing_ok=True)
+            try:
+                p.parent.rmdir()
+            except OSError:
+                pass
+        return {"status": "ok", "autosave": "direct-handler-v1",
+                "volume_write_verified": True, "output_root": str(p.parent.parent)}
+    if inputs.get("action") == "r2_smoke_test":
+        # No video inference and no ComfyUI wait. A tiny temporary object
+        # validates private bucket credentials and a signed GET end to end.
+        cfg = optional_delivery_cfg(job)
+        if cfg is None:
+            return {"status": "not_configured", "r2_ready": False}
+        try:
+            return await asyncio.to_thread(
+                r2_delivery_smoke_test, cfg, _s3_client, job.get("id") or "r2-smoke")
+        except Exception:
+            # Never return or log presigned URLs, API tokens or S3 exception
+            # strings: many SDK errors include full request URLs.
+            raise RuntimeError("R2 smoke test failed: check bucket permissions and endpoint") from None
+    if inputs.get("action") == "r2_republish_existing":
+        legacy_fixture_only = (
+            inputs.get("source_job_id") == "0f42bcac-49c9-4091-af0b-38f7b1bcad0d-u2"
+            and inputs.get("source_filename") == "MMH3_T2VA_2026-11-19_00001-audio.mp4"
+            and os.environ.get("NL4TEENS_S3_BUCKET") == "nl4teens-video"
+            and os.environ.get("NL4TEENS_FAST_BOOT", "false").lower() == "true"
+        )
+        if (os.environ.get("NL4TEENS_ALLOW_REPUBLISH_EXISTING", "false").lower()
+                != "true" and not legacy_fixture_only):
+            raise ValueError("republish: disabled or unapproved source")
+        # Explicit staging-only operation. Do not queue ComfyUI or GPU inference.
+        # Source paths are restricted to the autosave root in the helper.
+        try:
+            return await asyncio.to_thread(republish_existing_video, job, _s3_client)
+        except Exception as exc:
+            # Signed S3 links or object-storage credentials might appear in
+            # underlying SDK exception strings; never include them in status.
+            raise RuntimeError("republish: video QC or R2 delivery failed: "
+                               + type(exc).__name__) from None
     # Any real workload needs ComfyUI — wait for the background boot first.
     await _ensure_comfy()
+    log_event(job.get("id"), "comfy_ready", log_path=COMFY_LOG_PATH)
     _prune_volume_outputs()
     # _patch uploads input media (blocking, up to minutes for video) — run it
     # off-thread so a cancel signal can still be delivered during uploads.
@@ -874,11 +1067,21 @@ async def handler(job):
         wf = _load_workflow(inputs.get("workflow") or "")
         prompt = await asyncio.to_thread(_patch, wf, inputs)
     prompt = _apply_node_params(prompt, inputs.get("params"))
+    model_check = await asyncio.to_thread(preflight_models, prompt, _preflight_object_info)
+    print(f"[handler] model preflight passed: {model_check['models_checked']} checked", flush=True)
+    log_event(job.get("id"), "preflight_ok", checked_models=model_check["models_checked"],
+              node_count=len(prompt))
+    if inputs.get("action") == "preflight":
+        return {"status": "ok", "preflight": model_check, "node_count": len(prompt),
+                "expects_video": any(
+                    (n.get("class_type") in ("VHS_VideoCombine", "SaveVideo", "SaveVideoAsWebm"))
+                    for n in prompt.values() if isinstance(n, dict))}
     print(f"[handler] queuing prompt ({len(prompt)} nodes)", flush=True)
     started = time.time()
-    comfy_log = Path("/workspace/comfy.log")
+    comfy_log = COMFY_LOG_PATH
     log_mark = comfy_log.stat().st_size if comfy_log.is_file() else 0
-    history = await _queue_and_wait(prompt)
+    history = await _queue_and_wait(
+        prompt, job_id=job.get("id"), wait_s=inputs.get("comfy_timeout_s"))
     print(f"[handler] comfy execution took {time.time() - started:.1f}s", flush=True)
     inline_used = [0]
     outputs, texts = await asyncio.to_thread(_collect_outputs, history, prompt, job, inline_used)
@@ -894,8 +1097,10 @@ async def handler(job):
     if not outputs:
         outputs = _collect_new_files(started, job, inline_used)
         print(f"[handler] fallback sweep — {len(outputs)} file(s) in output/", flush=True)
+    validate_video_outputs(prompt, outputs)
     print(f"[handler] done — {len(outputs)} output(s)", flush=True)
-    return {"outputs": outputs, "texts": texts}
+    log_event(job.get("id"), "completed", elapsed_seconds=time.time() - started)
+    return {"outputs": outputs, "texts": texts, "preflight": model_check}
 
 
 if __name__ == "__main__":

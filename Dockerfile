@@ -27,6 +27,8 @@ RUN dl() { \
     dl huchukato ComfyUI-TagForge v2.3.0 ComfyUI-TagForge && \
     dl huchukato ComfyUI-PerfectVideoResolution master ComfyUI-PerfectVideoResolution && \
     dl huchukato ComfyUI-MiniMaxH3-Director-Enhanced main ComfyUI-MiniMaxH3-Director-Enhanced && \
+    dl entropicnoise MiniMax-H3-Combined-Image-And-Reference-to-Video main MiniMaxH3CombinedImageAndReference && \
+    git -C /opt/comfyui-baked/custom_nodes/MiniMaxH3CombinedImageAndReference checkout 40c74969fd805174bf3e1aed1f83f66ef7de6838 && \
     dl pixaroma ComfyUI-Pixaroma main ComfyUI-Pixaroma && \
     dl kijai ComfyUI-KJNodes main ComfyUI-KJNodes && \
     dl ltdrdata ComfyUI-Impact-Pack Main ComfyUI-Impact-Pack && \
@@ -62,6 +64,9 @@ RUN mkdir -p /opt/comfyui-baked/models/{vae,vae_approx,diffusion_models,unet,tex
 # Serverless entrypoint + handler + workflow templates (API format)
 # ──────────────────────────────────────────────────────────────────────────────
 COPY handler.py /opt/serverless/handler.py
+COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
+COPY nl4teens_pipeline.py /opt/serverless/nl4teens_pipeline.py
+COPY nl4teens_diagnostics.py /opt/serverless/nl4teens_diagnostics.py
 COPY serverless-entrypoint.sh /opt/serverless/entrypoint.sh
 COPY populate-volume.sh /opt/serverless/populate-volume.sh
 COPY models-manifest.txt /opt/serverless/models-manifest.txt

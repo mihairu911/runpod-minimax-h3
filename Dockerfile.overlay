@@ -1,0 +1,24 @@
+# Fast code-only rebuilds on top of the tested full MiniMax H3 candidate.
+# Pin the immutable digest so a later retag cannot silently change the base.
+# For updates to ComfyUI custom nodes/dependencies, rebuild using Dockerfile.
+FROM ghcr.io/mihairu911/runpod-minimax-h3@sha256:369cf8fa0cebbb3897e89c8b17aaed1777765b0177816fb70dee00a58cb4ba28
+
+COPY handler.py /opt/serverless/handler.py
+COPY --chmod=755 serverless-entrypoint.sh /opt/serverless/entrypoint.sh
+COPY prepare_workspace.py /opt/serverless/prepare_workspace.py
+COPY nl4teens_pipeline.py /opt/serverless/nl4teens_pipeline.py
+COPY nl4teens_diagnostics.py /opt/serverless/nl4teens_diagnostics.py
+
+# N&L Test 10: first-frame keyframe and actual identity/prop references in ONE H3 conditioning node.
+# Pin upstream source for repeatable staging (no unpinned code in production).
+RUN set -eux; \
+    node_dir=/opt/comfyui-baked/custom_nodes/MiniMaxH3CombinedImageAndReference; \
+    mkdir -p "$node_dir"; \
+    git -C "$node_dir" init; \
+    git -C "$node_dir" remote add origin https://github.com/entropicnoise/MiniMax-H3-Combined-Image-And-Reference-to-Video.git; \
+    git -C "$node_dir" fetch --depth 1 origin 40c74969fd805174bf3e1aed1f83f66ef7de6838; \
+    git -C "$node_dir" checkout --detach FETCH_HEAD
+
+# Only staging uses this overlay. Allow authenticated RunPod jobs to republish
+# already-QC'd videos from the restricted auto-output directory into private R2.
+ENV NL4TEENS_ALLOW_REPUBLISH_EXISTING=true
