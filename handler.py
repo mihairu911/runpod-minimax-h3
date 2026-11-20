@@ -35,7 +35,8 @@ from pathlib import Path
 import runpod
 from nl4teens_pipeline import (preflight_models, validate_video_outputs, inspect_video,
                               optional_delivery_cfg, signed_media_upload,
-                              r2_delivery_smoke_test, republish_existing_video)
+                              r2_delivery_smoke_test, republish_existing_video,
+                              validated_reference_image)
 from nl4teens_diagnostics import worker_comfy_log_path, log_event, queue_snapshot
 
 COMFY_DIR = os.environ.get("COMFYUI_DIR", "/workspace/runpod-slim/ComfyUI")
@@ -365,7 +366,16 @@ def _patch(prompt, job):
     if director_nodes and cfg:
         cfg = {**cfg, "unet": None}
     base = re.sub(r"[^\w.-]+", "-", str(job.get("job_name") or f"job_{uuid.uuid4().hex[:8]}")).strip("-")
-    images = [_upload(f"{base}_{i}.png", _media_bytes(v)) for i, v in enumerate(job.get("images") or [])]
+    images = []
+    if job.get("first_frame_path"):
+        # Actual 640px+ first-frame I2V conditioning, not a 108px reference
+        # and not a text-only description. The only allowed source is a
+        # validated image under private Global Volume inputs/.
+        frame_bytes = validated_reference_image(job["first_frame_path"])
+        frame_ext = Path(job["first_frame_path"]).suffix.lower()
+        images.append(_upload(f"{base}_firstframe{frame_ext}", frame_bytes))
+    images.extend(_upload(f"{base}_extra_{i}.png", _media_bytes(v))
+                  for i, v in enumerate(job.get("images") or []))
     video_name = None
     if job.get("video"):
         video_name = _upload(f"{base}.mp4", _media_bytes(job["video"]))
@@ -392,7 +402,14 @@ def _patch(prompt, job):
             if img_idx < len(images):
                 inp["image"] = images[img_idx]
                 if "LoadImageMiniState" in inp:
-                    inp["LoadImageMiniState"] = images[img_idx]
+                    # Pixaroma expects a JSON state object. Replacing it by
+                    # an image filename silently breaks its special loader.
+                    try:
+                        state = json.loads(inp["LoadImageMiniState"])
+                        state["orig_name"] = images[img_idx]
+                        inp["LoadImageMiniState"] = json.dumps(state)
+                    except (TypeError, ValueError):
+                        raise ValueError("start frame: invalid Pixaroma loader state")
                 if "LoadImagePixState" in inp:
                     try:
                         state = json.loads(inp["LoadImagePixState"])
