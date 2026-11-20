@@ -347,6 +347,12 @@ def _director_timeline(job):
 
 
 def _patch(prompt, job):
+    # Never fall back to a stale image baked into the upstream I2VA graph.
+    # This has to be a true uploaded first frame, not a tiny textual reference.
+    if (any(n.get("class_type") == "MiniMaxH3ImageToVideo"
+            for n in prompt.values()) and
+            not (job.get("first_frame_path") or job.get("images"))):
+        raise ValueError("I2V requires an explicit first-frame image")
     director_nodes = [n for n in prompt.values()
                       if n.get("class_type") == "MiniMaxH3DirectorCS"]
     # Two Director flows: Native (the timeline owns the text — build it from the
